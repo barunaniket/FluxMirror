@@ -10,74 +10,59 @@
   <body>
     <div class="app">
 
-      <!-- ── SIDEBAR ── -->
+      <!-- ══════════════ SIDEBAR ══════════════ -->
       <aside class="sidebar">
-
-        <!-- Branding -->
         <div class="brand">
           <div class="brand-logo">F</div>
           <div class="brand-name">FluxMirror</div>
         </div>
 
-        <!-- Primary actions -->
-        <div class="actions">
+        <!-- Nav -->
+        <nav class="sidebar-nav">
+          <button class="nav-btn active" data-page="home">
+            <span class="nav-icon">⊡</span> Mirror
+          </button>
+          <button class="nav-btn" data-page="connections">
+            <span class="nav-icon">◈</span> Connections
+          </button>
+        </nav>
+
+        <!-- Active connection indicator -->
+        <div class="active-conn" id="active-conn">
+          <div class="active-conn-label">No device connected</div>
+          <div class="active-conn-addr" id="active-conn-addr"></div>
+        </div>
+
+        <div class="sidebar-divider"></div>
+
+        <!-- Mirror controls (only relevant on home page) -->
+        <div class="actions" id="mirror-actions">
           <button class="btn btn-primary" id="btn-start">
             <span class="btn-icon">⚡</span>
             <span id="start-label">Engine Start</span>
           </button>
-
           <button class="btn btn-glass" id="btn-display">
             <span class="btn-icon">📱</span>
             <span id="display-label">Physical Screen: ON</span>
           </button>
-
           <button class="btn btn-glass" id="btn-latency">
-            <span class="btn-icon">🚀</span>
-            Performance: Normal
+            <span class="btn-icon">🚀</span> Performance: Normal
           </button>
         </div>
 
         <!-- System essentials -->
         <div class="essentials">
-          <button class="btn btn-mini" id="btn-vol">
-            <span>Vol+</span>
-          </button>
-          <button class="btn btn-mini" id="btn-bri">
-            <span>Lux</span>
-          </button>
-        </div>
-
-        <!-- Device connection / IP -->
-        <div class="connection">
-          <div class="section-title">Device Connection</div>
-
-          <input
-            class="ip-input"
-            id="ip-input"
-            type="text"
-            placeholder="192.168.x.x or :5555"
-            maxlength="45"
-            autocomplete="off"
-            spellcheck="false"
-          />
-
-          <div class="ip-hint" id="ip-hint">Not saved yet</div>
-
-          <button class="btn btn-glass btn-save" id="btn-save-ip">
-            <span class="btn-icon">💾</span>
-            Save IP
-          </button>
+          <button class="btn btn-mini" id="btn-vol">Vol+</button>
+          <button class="btn btn-mini" id="btn-bri">Lux</button>
         </div>
 
         <div class="sidebar-spacer"></div>
 
-        <!-- Status badge -->
         <div class="status-badge" id="status-badge">READY</div>
-
       </aside>
 
-      <!-- ── MAIN VIEWPORT ── -->
-      <main class="viewport">
+      <!-- ══════════════ PAGE: HOME ══════════════ -->
+      <main class="page" id="page-home">
         <div class="mirror-portal" id="mirror-portal">
           <div class="portal-inner">
             <div class="portal-icon">◈</div>
@@ -88,6 +73,140 @@
         </div>
       </main>
 
+      <!-- ══════════════ PAGE: CONNECTIONS ══════════════ -->
+      <main class="page hidden" id="page-connections">
+        <div class="connections-page">
+
+          <div class="page-header">
+            <div>
+              <h1 class="page-title">Connections</h1>
+              <p class="page-subtitle">Saved devices — click to connect</p>
+            </div>
+            <button class="btn btn-primary btn-add" id="btn-new-connection">
+              <span class="btn-icon">＋</span> New Connection
+            </button>
+          </div>
+
+          <!-- Cards grid -->
+          <div class="cards-grid" id="cards-grid">
+            <!-- Populated by JS -->
+          </div>
+
+          <!-- Empty state -->
+          <div class="empty-state hidden" id="empty-state">
+            <div class="empty-icon">📡</div>
+            <div class="empty-title">No saved connections</div>
+            <div class="empty-sub">Click "New Connection" to pair your device wirelessly</div>
+          </div>
+
+        </div>
+      </main>
+
     </div>
+
+    <!-- ══════════════ MODAL: WIRELESS SETUP ══════════════ -->
+    <div class="modal-backdrop" id="modal-setup">
+      <div class="modal">
+        <div class="modal-header">
+          <span class="modal-title">New Connection</span>
+          <button class="modal-close" data-close="modal-setup">✕</button>
+        </div>
+
+        <div class="method-tabs">
+          <button class="method-tab active" data-method="a">📡 No USB (Android 11+)</button>
+          <button class="method-tab" data-method="b">🔌 USB Once</button>
+        </div>
+
+        <!-- Method A -->
+        <div class="method-panel" id="panel-a">
+          <ol class="steps">
+            <li>Settings → Developer Options → <strong>Wireless Debugging</strong></li>
+            <li>Tap <strong>"Pair device with pairing code"</strong></li>
+            <li>Enter the IP:port and 6-digit code shown on your phone</li>
+          </ol>
+          <div class="field-group">
+            <label class="field-label">Pairing IP:Port</label>
+            <input class="ip-input" id="pair-address" placeholder="192.168.1.5:37497" autocomplete="off" spellcheck="false"/>
+          </div>
+          <div class="field-group">
+            <label class="field-label">6-Digit Pairing Code</label>
+            <input class="ip-input" id="pair-code" placeholder="123456" maxlength="6" autocomplete="off"/>
+          </div>
+          <button class="btn btn-primary btn-full" id="btn-pair">
+            <span class="btn-icon">🔑</span> Pair Device
+          </button>
+          <div class="modal-status" id="pair-status"></div>
+
+          <div class="divider">After pairing, enter connect address</div>
+
+          <div class="field-group">
+            <label class="field-label">Connect IP:Port (Wireless Debugging main screen)</label>
+            <input class="ip-input" id="connect-address-a" placeholder="192.168.1.5:5555" autocomplete="off" spellcheck="false"/>
+          </div>
+          <button class="btn btn-glass btn-full" id="btn-connect-a">
+            <span class="btn-icon">🔗</span> Connect
+          </button>
+          <div class="modal-status" id="connect-status-a"></div>
+        </div>
+
+        <!-- Method B -->
+        <div class="method-panel hidden" id="panel-b">
+          <ol class="steps">
+            <li>Plug your phone in via USB and accept the debug prompt</li>
+            <li>Click <strong>Enable TCP/IP</strong> below</li>
+            <li>Unplug USB, enter your phone's IP and connect</li>
+          </ol>
+          <button class="btn btn-primary btn-full" id="btn-tcpip">
+            <span class="btn-icon">🔌</span> Enable TCP/IP over USB
+          </button>
+          <div class="modal-status" id="tcpip-status"></div>
+          <div class="divider">Then unplug and connect</div>
+          <div class="field-group">
+            <label class="field-label">Phone IP (port 5555 added automatically)</label>
+            <input class="ip-input" id="connect-address-b" placeholder="192.168.1.5" autocomplete="off" spellcheck="false"/>
+          </div>
+          <button class="btn btn-glass btn-full" id="btn-connect-b">
+            <span class="btn-icon">🔗</span> Connect
+          </button>
+          <div class="modal-status" id="connect-status-b"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ MODAL: SAVE CONNECTION ══════════════ -->
+    <div class="modal-backdrop" id="modal-save">
+      <div class="modal modal-sm">
+        <div class="modal-header">
+          <span class="modal-title">Save Connection</span>
+        </div>
+        <p class="modal-desc">Give this device a name so you can reconnect instantly.</p>
+        <div class="field-group">
+          <label class="field-label">Device Name</label>
+          <input class="ip-input" id="conn-name" placeholder="e.g. My Pixel 8, Work Phone" autocomplete="off"/>
+        </div>
+        <div class="save-addr-preview" id="save-addr-preview"></div>
+        <div class="modal-actions">
+          <button class="btn btn-glass" id="btn-save-skip">Skip</button>
+          <button class="btn btn-primary" id="btn-save-confirm">
+            <span class="btn-icon">💾</span> Save
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ MODAL: DELETE CONFIRM ══════════════ -->
+    <div class="modal-backdrop" id="modal-delete">
+      <div class="modal modal-sm">
+        <div class="modal-header">
+          <span class="modal-title">Remove Connection</span>
+        </div>
+        <p class="modal-desc" id="delete-desc">Remove this saved connection?</p>
+        <div class="modal-actions">
+          <button class="btn btn-glass" data-close="modal-delete">Cancel</button>
+          <button class="btn btn-danger" id="btn-delete-confirm">Remove</button>
+        </div>
+      </div>
+    </div>
+
   </body>
 </html>
