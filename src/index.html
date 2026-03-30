@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FluxMirror</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/main.js" defer></script>
+  </head>
+  <body>
+    <div class="app">
+
+      <!-- ── SIDEBAR ── -->
+      <aside class="sidebar">
+
+        <!-- Branding -->
+        <div class="brand">
+          <div class="brand-logo">F</div>
+          <div class="brand-name">FluxMirror</div>
+        </div>
+
+        <!-- Primary actions -->
+        <div class="actions">
+          <button class="btn btn-primary" id="btn-start">
+            <span class="btn-icon">⚡</span>
+            <span id="start-label">Engine Start</span>
+          </button>
+
+          <button class="btn btn-glass" id="btn-display">
+            <span class="btn-icon">📱</span>
+            <span id="display-label">Physical Screen: ON</span>
+          </button>
+
+          <button class="btn btn-glass" id="btn-latency">
+            <span class="btn-icon">🚀</span>
+            Performance: Normal
+          </button>
+        </div>
+
+        <!-- System essentials -->
+        <div class="essentials">
+          <button class="btn btn-mini" id="btn-vol">
+            <span>Vol+</span>
+          </button>
+          <button class="btn btn-mini" id="btn-bri">
+            <span>Lux</span>
+          </button>
+        </div>
+
+        <!-- Device connection / IP -->
+        <div class="connection">
+          <div class="section-title">Device Connection</div>
+
+          <input
+            class="ip-input"
+            id="ip-input"
+            type="text"
+            placeholder="192.168.x.x or :5555"
+            maxlength="45"
+            autocomplete="off"
+            spellcheck="false"
+          />
+
+          <div class="ip-hint" id="ip-hint">Not saved yet</div>
+
+          <button class="btn btn-glass btn-save" id="btn-save-ip">
+            <span class="btn-icon">💾</span>
+            Save IP
+          </button>
+        </div>
+
+        <div class="sidebar-spacer"></div>
+
+        <!-- Status badge -->
+        <div class="status-badge" id="status-badge">READY</div>
+
+      </aside>
+
+      <!-- ── MAIN VIEWPORT ── -->
+      <main class="viewport">
+        <div class="mirror-portal" id="mirror-portal">
+          <div class="portal-inner">
+            <div class="portal-icon">◈</div>
+            <div class="portal-msg" id="portal-msg">
+              Phone display area active.<br/>Launch the engine to begin.
+            </div>
+          </div>
+        </div>
+      </main>
+
+    </div>
+  </body>
+</html>
