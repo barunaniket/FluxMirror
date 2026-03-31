@@ -3,9 +3,11 @@ const { invoke } = window.__TAURI__.core;
 // ── State ─────────────────────────────────────────────────────────────────────
 let isStreaming    = false;
 let isDisplayOn    = true;
-let activeConn     = null;   // { id, name, address }
+let activeConn     = null;   // { id, name, address, connection_type }
 let pendingAddress = "";     // address waiting to be saved after connect
+let pendingConnType = "wireless"; // connection type for pending save
 let deleteTargetId = "";
+let detectedIp     = "";     // IP from adb_get_ip, applied when panel-b is visible
 
 // ── DOM: sidebar ──────────────────────────────────────────────────────────────
 const btnStart       = document.getElementById("btn-start");
@@ -14,11 +16,16 @@ const btnDisplay     = document.getElementById("btn-display");
 const displayLabel   = document.getElementById("display-label");
 const btnVol         = document.getElementById("btn-vol");
 const btnBri         = document.getElementById("btn-bri");
+const btnDisconnect  = document.getElementById("btn-disconnect");
 const statusBadge    = document.getElementById("status-badge");
 const activeConnEl   = document.getElementById("active-conn");
 const activeConnAddr = document.getElementById("active-conn-addr");
 const portalMsg      = document.getElementById("portal-msg");
 const portal         = document.getElementById("mirror-portal");
+
+// ── DOM: quality controls ─────────────────────────────────────────────────────
+const selResolution = document.getElementById("sel-resolution");
+const selBitrate    = document.getElementById("sel-bitrate");
 
 // ── DOM: nav ──────────────────────────────────────────────────────────────────
 const navBtns      = document.querySelectorAll(".nav-btn");
@@ -35,6 +42,10 @@ const modalSetup     = document.getElementById("modal-setup");
 const methodTabs     = document.querySelectorAll(".method-tab");
 const panelA         = document.getElementById("panel-a");
 const panelB         = document.getElementById("panel-b");
+const panelC         = document.getElementById("panel-c");
+const btnScanUsb     = document.getElementById("btn-scan-usb");
+const usbScanStatus  = document.getElementById("usb-scan-status");
+const usbDeviceList  = document.getElementById("usb-device-list");
 const pairAddress    = document.getElementById("pair-address");
 const pairCode       = document.getElementById("pair-code");
 const btnPair        = document.getElementById("btn-pair");
@@ -87,12 +98,31 @@ function setActiveConnection(conn) {
   if (conn) {
     activeConnEl.querySelector(".active-conn-label").textContent = conn.name;
     activeConnAddr.textContent = conn.address;
+    btnDisconnect.classList.remove("hidden");
   } else {
     activeConnEl.querySelector(".active-conn-label").textContent = "No device connected";
     activeConnAddr.textContent = "";
+    btnDisconnect.classList.add("hidden");
   }
   renderCards();
 }
+
+// Disconnect button
+btnDisconnect.addEventListener("click", async () => {
+  // Stop mirror if running
+  if (isStreaming) {
+    try { await invoke("stop_mirror"); } catch (_) {}
+    isStreaming = false;
+    startLabel.textContent = "Engine Start";
+    btnStart.classList.remove("streaming");
+    portal.classList.remove("streaming");
+  }
+  // Explicitly clear IP from config on disk
+  try { await invoke("disconnect_device"); } catch (_) {}
+  setActiveConnection(null);
+  setStatus("READY");
+  portalMsg.innerHTML = "Phone display area active.<br/>Launch the engine to begin.";
+});
 
 // ── Nav ───────────────────────────────────────────────────────────────────────
 navBtns.forEach(btn => {
@@ -114,9 +144,30 @@ async function init() {
       const match = cfg.connections.find(c => c.address === cfg.device_ip);
       if (match) setActiveConnection(match);
     }
+    // Restore quality settings
+    if (cfg.max_size) selResolution.value = String(cfg.max_size);
+    if (cfg.video_bitrate) selBitrate.value = cfg.video_bitrate;
     renderCards();
   } catch (e) { console.error("init failed:", e); }
 }
+
+// ── Quality controls ──────────────────────────────────────────────────────────
+
+async function applyQualitySettings() {
+  const maxSize = selResolution.value ? parseInt(selResolution.value, 10) : null;
+  const videoBitrate = selBitrate.value || null;
+  try {
+    await invoke("save_mirror_settings", { maxSize, videoBitrate });
+    // If currently streaming, restart to apply
+    if (isStreaming) {
+      await invoke("stop_mirror");
+      await invoke("start_mirror");
+    }
+  } catch (e) { console.error("save_mirror_settings failed:", e); }
+}
+
+selResolution.addEventListener("change", applyQualitySettings);
+selBitrate.addEventListener("change", applyQualitySettings);
 
 // ── Cards ─────────────────────────────────────────────────────────────────────
 async function renderCards() {
@@ -133,10 +184,13 @@ async function renderCards() {
       const isActive = activeConn && activeConn.id === conn.id;
       const card = document.createElement("div");
       card.className = "conn-card" + (isActive ? " active-card" : "");
+      const addrDisplay = conn.connection_type === "wired"
+        ? `USB · ${conn.address}`
+        : conn.address;
       card.innerHTML = `
-        <div class="conn-card-icon">📱</div>
+        <div class="conn-card-icon">${conn.connection_type === "wired" ? "🔗" : "📱"}</div>
         <div class="conn-card-name">${conn.name}</div>
-        <div class="conn-card-addr">${conn.address}</div>
+        <div class="conn-card-addr">${addrDisplay}</div>
         <div class="conn-card-meta">${formatLastConnected(conn.last_connected)}</div>
         <div class="conn-card-actions">
           <button class="btn conn-card-btn btn-connect-card" data-id="${conn.id}">
@@ -175,12 +229,16 @@ async function renderCards() {
 async function connectById(id) {
   try {
     const conn = await invoke("activate_connection", { id });
-    // adb connect
     setStatus("CONNECTING…", "");
-    await invoke("adb_connect", { address: conn.address });
+    if (conn.connection_type !== "wired") {
+      await invoke("adb_connect", { address: conn.address });
+    }
     setActiveConnection(conn);
     setStatus("CONNECTED", "streaming");
-    portalMsg.innerHTML = `Connected to <strong>${conn.name}</strong><br/><code style="color:var(--accent-cyan);font-size:12px">${conn.address}</code>`;
+    const addrLabel = conn.connection_type === "wired"
+      ? `<code style="color:var(--accent-cyan);font-size:12px">USB · ${conn.address}</code>`
+      : `<code style="color:var(--accent-cyan);font-size:12px">${conn.address}</code>`;
+    portalMsg.innerHTML = `Connected to <strong>${conn.name}</strong><br/>${addrLabel}`;
     // Switch to home
     navBtns.forEach(b => b.classList.remove("active"));
     document.querySelector('[data-page="home"]').classList.add("active");
@@ -193,8 +251,9 @@ async function connectById(id) {
 }
 
 // ── Save connection flow ───────────────────────────────────────────────────────
-function triggerSaveFlow(address) {
+function triggerSaveFlow(address, connType = "wireless") {
   pendingAddress = address;
+  pendingConnType = connType;
   connNameInput.value = "";
   saveAddrPreview.textContent = address;
   closeModal(modalSetup);
@@ -211,10 +270,11 @@ btnSaveSkip.addEventListener("click", () => {
 btnSaveConfirm.addEventListener("click", async () => {
   const name = connNameInput.value.trim() || pendingAddress;
   try {
-    const conn = await invoke("save_connection", { name, address: pendingAddress });
+    const conn = await invoke("save_connection", { name, address: pendingAddress, connectionType: pendingConnType });
     setActiveConnection(conn);
     closeModal(modalSave);
     pendingAddress = "";
+    pendingConnType = "wireless";
     renderCards();
   } catch (e) {
     console.error("save_connection failed:", e);
@@ -241,7 +301,61 @@ methodTabs.forEach(tab => {
     tab.classList.add("active");
     panelA.classList.toggle("hidden", tab.dataset.method !== "a");
     panelB.classList.toggle("hidden", tab.dataset.method !== "b");
+    panelC.classList.toggle("hidden", tab.dataset.method !== "c");
+    // Apply any detected IP now that panel-b is visible
+    if (tab.dataset.method === "b" && detectedIp) {
+      document.getElementById("connect-address-b").value = detectedIp;
+    }
   });
+});
+
+// ── USB wired scan ────────────────────────────────────────────────────────────
+
+btnScanUsb.addEventListener("click", async () => {
+  setModalStatus(usbScanStatus, "pending", "Scanning…");
+  usbDeviceList.innerHTML = "";
+  try {
+    const devices = await invoke("adb_list_usb_devices");
+    if (devices.length === 0) {
+      setModalStatus(usbScanStatus, "error", "No USB devices found. Check USB debugging is enabled.");
+      return;
+    }
+    setModalStatus(usbScanStatus, "success", `${devices.length} device${devices.length > 1 ? "s" : ""} found`);
+    devices.forEach(dev => {
+      const item = document.createElement("div");
+      item.className = "usb-device-item";
+      item.innerHTML = `
+        <div class="usb-device-info">
+          <div class="usb-device-model">${dev.model}</div>
+          <div class="usb-device-serial">${dev.serial}</div>
+        </div>
+        <button class="btn btn-connect-usb">Connect</button>
+      `;
+      item.querySelector(".btn-connect-usb").addEventListener("click", async () => {
+        setModalStatus(usbScanStatus, "pending", "Saving connection…");
+        try {
+          const conn = await invoke("save_connection", {
+            name: dev.model,
+            address: dev.serial,
+            connectionType: "wired",
+          });
+          setActiveConnection(conn);
+          closeModal(modalSetup);
+          setStatus("CONNECTED", "streaming");
+          portalMsg.innerHTML = `Connected to <strong>${conn.name}</strong><br/><code style="color:var(--accent-cyan);font-size:12px">USB · ${conn.address}</code>`;
+          navBtns.forEach(b => b.classList.remove("active"));
+          document.querySelector('[data-page="home"]').classList.add("active");
+          pageConns.classList.add("hidden");
+          pageHome.classList.remove("hidden");
+        } catch (e) {
+          setModalStatus(usbScanStatus, "error", String(e));
+        }
+      });
+      usbDeviceList.appendChild(item);
+    });
+  } catch (e) {
+    setModalStatus(usbScanStatus, "error", String(e));
+  }
 });
 
 // Generic close buttons
@@ -289,14 +403,22 @@ btnTcpip.addEventListener("click", async () => {
   try {
     await invoke("adb_tcpip");
     setModalStatus(tcpipStatus, "pending", "Detecting phone IP…");
-
-    // Auto-detect phone IP and fill the input
     try {
-      const ip = await invoke("adb_get_ip");
-      connectAddrB.value = ip;
-      setModalStatus(tcpipStatus, "success", `TCP/IP enabled · IP detected: ${ip} ✓ — unplug USB now`);
+      let ip = await invoke("adb_get_ip");
+      let displayIp = ip;
+      let hint = `TCP/IP enabled · IP detected: ${ip} ✓ — unplug USB now`;
+
+      if (ip.startsWith("__hotspot__")) {
+        displayIp = ip.replace("__hotspot__", "");
+        hint = `TCP/IP enabled ✓ — Hotspot detected, using gateway IP: ${displayIp}. Unplug USB now`;
+      }
+
+      detectedIp = displayIp;
+      const ipField = document.getElementById("connect-address-b");
+      if (ipField) ipField.value = displayIp;
+      setModalStatus(tcpipStatus, "success", hint);
     } catch (_) {
-      // IP detection failed — not a blocker, user can type it manually
+      detectedIp = "";
       setModalStatus(tcpipStatus, "success", "TCP/IP enabled ✓ — unplug USB, then enter your phone's IP below");
     }
   } catch (e) {
@@ -306,7 +428,8 @@ btnTcpip.addEventListener("click", async () => {
 
 // ── Method B: Connect ─────────────────────────────────────────────────────────
 btnConnectB.addEventListener("click", async () => {
-  let addr = connectAddrB.value.trim();
+  const ipField = document.getElementById("connect-address-b");
+  let addr = ipField ? ipField.value.trim() : "";
   if (!addr) { setModalStatus(connectStatusB, "error", "Enter phone IP"); return; }
   if (!addr.includes(":")) addr += ":5555";
   setModalStatus(connectStatusB, "pending", "Connecting…");
@@ -330,6 +453,11 @@ btnStart.addEventListener("click", async () => {
     portal.classList.remove("streaming");
     portalMsg.innerHTML = "Phone display area active.<br/>Launch the engine to begin.";
   } else {
+    if (!activeConn) {
+      portalMsg.innerHTML = "No device connected.<br/>Go to <strong>Connections</strong> to connect a device first.";
+      setStatus("NO DEVICE", "error");
+      return;
+    }
     try {
       await invoke("start_mirror");
       isStreaming = true;

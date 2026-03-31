@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub device_ip: Option<String>,
     pub connections: Vec<SavedConnection>,
+    pub max_size: Option<u32>,       // scrcpy --max-size, None = original
+    pub video_bitrate: Option<String>, // scrcpy --video-bit-rate, None = default
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -19,6 +21,13 @@ pub struct SavedConnection {
     pub name: String,
     pub address: String,
     pub last_connected: Option<String>,
+    pub connection_type: Option<String>, // "wireless" | "wired"
+}
+
+#[derive(Serialize, Clone)]
+pub struct UsbDevice {
+    pub serial: String,
+    pub model: String,
 }
 
 fn config_path() -> PathBuf {
@@ -49,7 +58,6 @@ fn simple_id() -> String {
 }
 
 fn now_iso() -> String {
-    // Simple timestamp without external deps
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -78,8 +86,8 @@ impl Default for AppState {
 
 mod commands {
     use super::{
-        load_config_from_disk, now_iso, save_config_to_disk, simple_id, AppState, Config,
-        SavedConnection,
+        load_config_from_disk, now_iso, save_config_to_disk,
+        simple_id, AppState, Config, SavedConnection, UsbDevice,
     };
     use tauri::State;
 
@@ -99,11 +107,16 @@ mod commands {
         save_config_to_disk(&cfg)
     }
 
-    // Save a named connection to the connections list
     #[tauri::command]
-    pub fn save_connection(name: String, address: String) -> Result<SavedConnection, String> {
+    pub fn disconnect_device(_state: State<'_, AppState>) -> Result<(), String> {
         let mut cfg = load_config_from_disk();
-        // Update existing if same address, otherwise add new
+        cfg.device_ip = None;
+        save_config_to_disk(&cfg)
+    }
+
+    #[tauri::command]
+    pub fn save_connection(name: String, address: String, connection_type: Option<String>) -> Result<SavedConnection, String> {
+        let mut cfg = load_config_from_disk();
         let existing = cfg.connections.iter().position(|c| c.address == address.trim());
         let conn = SavedConnection {
             id: existing
@@ -112,19 +125,18 @@ mod commands {
             name: name.trim().to_string(),
             address: address.trim().to_string(),
             last_connected: Some(now_iso()),
+            connection_type,
         };
         if let Some(i) = existing {
             cfg.connections[i] = conn.clone();
         } else {
             cfg.connections.push(conn.clone());
         }
-        // Also set as active IP
         cfg.device_ip = Some(address.trim().to_string());
         save_config_to_disk(&cfg)?;
         Ok(conn)
     }
 
-    // Delete a saved connection by id
     #[tauri::command]
     pub fn delete_connection(id: String) -> Result<(), String> {
         let mut cfg = load_config_from_disk();
@@ -132,7 +144,6 @@ mod commands {
         save_config_to_disk(&cfg)
     }
 
-    // Activate a saved connection — sets it as the active IP and updates last_connected
     #[tauri::command]
     pub fn activate_connection(id: String) -> Result<SavedConnection, String> {
         let mut cfg = load_config_from_disk();
@@ -165,9 +176,35 @@ mod commands {
             "--always-on-top".into(),
         ];
 
-        if let Some(ip) = &cfg.device_ip {
+        // Determine if the active connection is wired (USB) or wireless
+        let is_wired = cfg.connections.iter()
+            .find(|c| cfg.device_ip.as_deref() == Some(c.address.as_str()))
+            .and_then(|c| c.connection_type.as_deref())
+            .map(|t| t == "wired")
+            .unwrap_or(false);
+
+        if is_wired {
+            if let Some(serial) = &cfg.device_ip {
+                args.push("-s".into());
+                args.push(serial.trim().to_string());
+            }
+        } else if let Some(ip) = &cfg.device_ip {
             if !ip.trim().is_empty() {
                 args.push(format!("--tcpip={}", ip.trim()));
+            }
+        }
+
+        if let Some(size) = cfg.max_size {
+            if size > 0 {
+                args.push("--max-size".into());
+                args.push(size.to_string());
+            }
+        }
+
+        if let Some(ref bitrate) = cfg.video_bitrate {
+            if !bitrate.is_empty() {
+                args.push("--video-bit-rate".into());
+                args.push(bitrate.clone());
             }
         }
 
@@ -260,7 +297,7 @@ mod commands {
     #[tauri::command]
     pub fn adb_tcpip() -> Result<String, String> {
         let output = std::process::Command::new("adb")
-            .args(["tcpip", "5555"])
+            .args(["-d", "tcpip", "5555"])
             .output()
             .map_err(|e| format!("adb not found: {}", e))?;
 
@@ -275,33 +312,163 @@ mod commands {
         }
     }
 
-    /// Read the phone's WiFi IP directly over USB via `adb shell ip route`
-    /// Returns just the IP string, e.g. "192.168.1.42"
+    #[tauri::command]
+    pub fn save_mirror_settings(max_size: Option<u32>, video_bitrate: Option<String>) -> Result<(), String> {
+        let mut cfg = load_config_from_disk();
+        cfg.max_size = max_size;
+        cfg.video_bitrate = video_bitrate;
+        save_config_to_disk(&cfg)
+    }
+
+    #[tauri::command]
+    pub fn adb_list_usb_devices() -> Result<Vec<UsbDevice>, String> {
+        let output = std::process::Command::new("adb")
+            .args(["devices", "-l"])
+            .output()
+            .map_err(|e| format!("adb error: {}", e))?;
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        let mut devices = Vec::new();
+        for line in text.lines().skip(1) {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 { continue; }
+            let serial = parts[0];
+            let status = parts[1];
+            if status != "device" { continue; }
+            if serial.contains(':') { continue; } // skip wireless devices
+            let model = parts.iter()
+                .find(|p| p.starts_with("model:"))
+                .map(|p| p.trim_start_matches("model:").replace('_', " "))
+                .unwrap_or_else(|| serial.to_string());
+            devices.push(UsbDevice { serial: serial.to_string(), model });
+        }
+        Ok(devices)
+    }
+
     #[tauri::command]
     pub fn adb_get_ip() -> Result<String, String> {
-        let output = std::process::Command::new("adb")
-            .args(["shell", "ip", "route"])
-            .output()
-            .map_err(|e| format!("adb not found: {}", e))?;
+        if let Ok(ip) = adb_shell_ip_route() { return Ok(ip); }
+        if let Ok(ip) = adb_shell_ip_addr()  { return Ok(ip); }
+        if let Ok(ip) = adb_shell_ifconfig() { return Ok(ip); }
+        if let Ok(ip) = pc_default_gateway() {
+            return Ok(format!("__hotspot__{}", ip));
+        }
+        Err("Could not detect phone IP. Enter it manually.".to_string())
+    }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    fn pc_default_gateway() -> Result<String, String> {
+        let out = std::process::Command::new("ip")
+            .args(["route"])
+            .output().map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        for line in text.lines() {
+            if !line.starts_with("default") { continue; }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if let Some(i) = parts.iter().position(|&p| p == "via") {
+                if let Some(ip) = parts.get(i + 1) {
+                    if is_private_ip(ip) { return Ok(ip.to_string()); }
+                }
+            }
+        }
+        Err("no gateway found".into())
+    }
 
-        // `ip route` output looks like:
-        //   192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.42
-        // We want the IP after "src"
-        for line in stdout.lines() {
-            if line.contains("wlan") || line.contains("src") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(src_pos) = parts.iter().position(|&p| p == "src") {
-                    if let Some(ip) = parts.get(src_pos + 1) {
-                        return Ok(ip.to_string());
+    fn adb_shell_ip_route() -> Result<String, String> {
+        let out = std::process::Command::new("adb")
+            .args(["-d", "shell", "ip", "route"])
+            .output().map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut best: Option<(u8, String)> = None;
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if let Some(i) = parts.iter().position(|&p| p == "src") {
+                if let Some(ip) = parts.get(i + 1) {
+                    if !is_private_ip(ip) { continue; }
+                    let priority: u8 = if line.contains("wlan") { 0 }
+                        else if line.contains("ap") { 1 }
+                        else { 2 };
+                    if best.as_ref().map_or(true, |(p, _)| priority < *p) {
+                        best = Some((priority, ip.to_string()));
                     }
                 }
             }
         }
-
-        Err("Could not detect phone IP. Make sure WiFi is on and USB debugging is active.".to_string())
+        best.map(|(_, ip)| ip).ok_or_else(|| "not found".into())
     }
+
+    fn adb_shell_ip_addr() -> Result<String, String> {
+        let out = std::process::Command::new("adb")
+            .args(["-d", "shell", "ip", "addr"])
+            .output().map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut current_iface = String::new();
+        let mut fallback: Option<String> = None;
+        for line in text.lines() {
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                current_iface = line.to_lowercase();
+            }
+            let line = line.trim();
+            if line.starts_with("inet ") && !line.starts_with("inet6") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if let Some(addr) = parts.get(1) {
+                    let ip = addr.split('/').next().unwrap_or("");
+                    if is_private_ip(ip) {
+                        if current_iface.contains("wlan") { return Ok(ip.to_string()); }
+                        fallback = Some(ip.to_string());
+                    }
+                }
+            }
+        }
+        fallback.ok_or_else(|| "not found".into())
+    }
+
+    fn adb_shell_ifconfig() -> Result<String, String> {
+        let out = std::process::Command::new("adb")
+            .args(["-d", "shell", "ifconfig"])
+            .output().map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut current_iface = String::new();
+        let mut fallback: Option<String> = None;
+        for line in text.lines() {
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                current_iface = line.to_lowercase();
+            }
+            let line = line.trim();
+            if line.contains("inet addr:") {
+                if let Some(start) = line.find("inet addr:") {
+                    let ip = line[start + 10..].split_whitespace().next().unwrap_or("");
+                    if is_private_ip(ip) {
+                        if current_iface.contains("wlan") { return Ok(ip.to_string()); }
+                        fallback = Some(ip.to_string());
+                    }
+                }
+            } else if line.starts_with("inet ") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if let Some(ip) = parts.get(1) {
+                    if is_private_ip(ip) {
+                        if current_iface.contains("wlan") { return Ok(ip.to_string()); }
+                        fallback = Some(ip.to_string());
+                    }
+                }
+            }
+        }
+        fallback.ok_or_else(|| "not found".into())
+    }
+
+    fn is_private_ip(ip: &str) -> bool {
+        let parts: Vec<&str> = ip.split('.').collect();
+        if parts.len() != 4 { return false; }
+        let nums: Vec<u8> = match parts.iter().map(|p| p.parse::<u8>()).collect::<Result<Vec<_>, _>>() {
+            Ok(n) => n, Err(_) => return false,
+        };
+        if nums[0] == 127 { return false; }
+        if nums[0] == 169 && nums[1] == 254 { return false; }
+        matches!(nums[0], 10) ||
+        (nums[0] == 172 && (16..=31).contains(&nums[1])) ||
+        (nums[0] == 192 && nums[1] == 168)
+    }
+
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -314,6 +481,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::load_config,
             commands::save_ip,
+            commands::disconnect_device,
             commands::save_connection,
             commands::delete_connection,
             commands::activate_connection,
@@ -326,6 +494,8 @@ pub fn run() {
             commands::adb_connect,
             commands::adb_tcpip,
             commands::adb_get_ip,
+            commands::adb_list_usb_devices,
+            commands::save_mirror_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running FluxMirror");
